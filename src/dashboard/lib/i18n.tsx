@@ -1,4 +1,5 @@
 import { createContext, useContext, useState, useCallback, type ReactNode } from 'react';
+import { setFormatLocale } from './format';
 
 /**
  * Lightweight i18n for the dashboard. No dependencies: a flat dictionary per
@@ -651,10 +652,15 @@ interface I18n {
 const I18nContext = createContext<I18n | null>(null);
 
 export function I18nProvider({ children }: { children: ReactNode }) {
-  const [lang, setLangState] = useState<Lang>(detectLang);
+  const [lang, setLangState] = useState<Lang>(() => {
+    const l = detectLang();
+    setFormatLocale(l); // keep Intl formatting (dates, numbers, money) in sync from the first render
+    return l;
+  });
 
   const setLang = useCallback((l: Lang) => {
     setLangState(l);
+    setFormatLocale(l);
     try {
       localStorage.setItem(STORAGE_KEY, l);
     } catch {
