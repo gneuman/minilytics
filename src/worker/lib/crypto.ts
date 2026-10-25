@@ -18,6 +18,12 @@ function bytesToB64(bytes: ArrayBuffer): string {
   return btoa(s);
 }
 
+function bytesToHex(bytes: ArrayBuffer): string {
+  let s = '';
+  for (const b of new Uint8Array(bytes)) s += b.toString(16).padStart(2, '0');
+  return s;
+}
+
 async function hmac(key: Uint8Array<ArrayBuffer>, data: string): Promise<ArrayBuffer> {
   const k = await crypto.subtle.importKey('raw', key, { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']);
   return crypto.subtle.sign('HMAC', k, enc.encode(data));
@@ -55,6 +61,38 @@ export async function verifyStandardWebhook(
     .split(' ')
     .map((s) => s.split(',')[1] ?? '')
     .some((sig) => safeEqual(sig, expected));
+}
+
+/**
+ * Verify a Stripe webhook signature (the `Stripe-Signature` header).
+ * Signed content is `${timestamp}.${body}`, HMAC-SHA256 (hex) with the raw
+ * `whsec_...` secret used as the key. The header carries `t=` and one or more
+ * `v1=` signatures; any match passes.
+ */
+export async function verifyStripeWebhook(
+  secret: string,
+  header: string | null,
+  body: string,
+  now = Date.now(),
+): Promise<boolean> {
+  if (!header) return false;
+  const parts = Object.fromEntries(
+    header.split(',').map((p) => {
+      const i = p.indexOf('=');
+      return [p.slice(0, i).trim(), p.slice(i + 1).trim()];
+    }),
+  ) as { t?: string };
+  const v1 = header
+    .split(',')
+    .map((p) => p.trim())
+    .filter((p) => p.startsWith('v1='))
+    .map((p) => p.slice(3));
+  const ts = Number(parts.t);
+  if (!Number.isFinite(ts) || !v1.length) return false;
+  // Reject replays older than 5 minutes.
+  if (Math.abs(now / 1000 - ts) > 5 * 60) return false;
+  const expected = bytesToHex(await hmac(enc.encode(secret), `${ts}.${body}`));
+  return v1.some((sig) => safeEqual(sig, expected));
 }
 
 /** Sign a value for the dashboard login cookie. */

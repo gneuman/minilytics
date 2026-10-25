@@ -1,6 +1,6 @@
 import type { Context } from 'hono';
 import { getSite, type AppEnv, type Site } from './env';
-import { verifyStandardWebhook } from './lib/crypto';
+import { verifyStandardWebhook, verifyStripeWebhook } from './lib/crypto';
 
 export function currencyDecimals(currency: string): number {
   try {
@@ -298,6 +298,89 @@ export async function handleDodoWebhook(c: Context<AppEnv>) {
       .run();
   }
   // Every other event type is acknowledged so Dodo doesn't retry it.
+  return c.json({ ok: true });
+}
+
+/**
+ * Stripe webhook: POST /api/webhooks/stripe/:siteId
+ * Handles charge.succeeded / payment_intent.succeeded (payments) and
+ * charge.refunded (refunds). Attribution uses metadata on the charge,
+ * payment intent or checkout session — pass `ml_visitor_id` / `ml_session_id`
+ * (or Checkout's `client_reference_id`) so a payment links to the visitor.
+ */
+export async function handleStripeWebhook(c: Context<AppEnv>) {
+  const site = await getSite(c.env.DB, c.req.param('siteId')!);
+  if (!site) return c.json({ error: 'unknown site' }, 404);
+  if (!site.stripe_webhook_secret) return c.json({ error: 'webhook secret not configured for this site' }, 400);
+
+  const body = await c.req.text();
+  const ok = await verifyStripeWebhook(site.stripe_webhook_secret, c.req.header('stripe-signature') ?? null, body);
+  if (!ok) return c.json({ error: 'invalid signature' }, 401);
+
+  const event = JSON.parse(body) as { type: string; created?: number; data: { object: Record<string, any> } };
+  const obj = event.data?.object ?? {};
+  const ts = (Number(obj.created ?? event.created) || Date.now() / 1000) * 1000;
+
+  // Stripe amounts are in the currency's minor unit already (cents), which is what we store.
+  const minor = Number(obj.amount ?? obj.amount_total ?? obj.amount_received ?? 0) || 0;
+  const currency = String(obj.currency ?? site.currency).toUpperCase();
+  // Metadata can live on the object itself or, for a checkout session, be mirrored on the PI.
+  const meta = { ...(obj.metadata as object) } as Record<string, unknown>;
+  const visitorId =
+    pickMeta(meta, ['ml_visitor_id', 'visitor_id', 'minilytics_visitor_id']) ?? str(obj.client_reference_id);
+  const sessionId = pickMeta(meta, ['ml_session_id', 'session_id', 'minilytics_session_id']);
+  const email =
+    str(obj.receipt_email)?.toLowerCase() ??
+    str((obj.billing_details as Record<string, unknown>)?.email)?.toLowerCase() ??
+    str((obj.customer_details as Record<string, unknown>)?.email)?.toLowerCase() ??
+    null;
+  const name = str((obj.billing_details as Record<string, unknown>)?.name) ?? str((obj.customer_details as Record<string, unknown>)?.name);
+  const customerId = str(obj.customer);
+
+  if (event.type === 'charge.succeeded' || event.type === 'payment_intent.succeeded' || event.type === 'checkout.session.completed') {
+    // checkout.session.completed only counts the money once it is actually paid.
+    if (event.type === 'checkout.session.completed' && obj.payment_status && obj.payment_status !== 'paid') {
+      return c.json({ ok: true });
+    }
+    await recordPayment(c.env.DB, site, {
+      id: String(obj.id),
+      provider: 'stripe',
+      ts,
+      amount: minor,
+      kind: 'payment',
+      currency,
+      visitorId,
+      sessionId,
+      customerId,
+      email,
+      name,
+      subscriptionId: str(obj.subscription) ?? str((obj.invoice as Record<string, unknown>)?.subscription),
+    });
+  } else if (event.type === 'charge.refunded') {
+    const original = await c.env.DB.prepare('SELECT * FROM payments WHERE id = ? AND site_id = ?')
+      .bind(String(obj.id), site.id)
+      .first<{ visitor_id: string | null; session_id: string | null; currency: string; amount: number }>();
+    // amount_refunded is cumulative; store the delta against what we already recorded.
+    const refunded = Number(obj.amount_refunded ?? minor) || 0;
+    await c.env.DB.prepare(
+      `INSERT OR IGNORE INTO payments (id, site_id, provider, ts, amount, kind, currency, visitor_id, session_id, customer_id, email, name)
+       VALUES (?, ?, 'stripe', ?, ?, 'refund', ?, ?, ?, ?, ?, ?)`,
+    )
+      .bind(
+        `refund_${obj.id}`,
+        site.id,
+        ts,
+        -Math.abs(refunded),
+        currency,
+        original?.visitor_id ?? visitorId,
+        original?.session_id ?? sessionId,
+        customerId,
+        email,
+        name,
+      )
+      .run();
+  }
+  // Acknowledge everything else so Stripe doesn't retry.
   return c.json({ ok: true });
 }
 
