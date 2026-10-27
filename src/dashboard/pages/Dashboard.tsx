@@ -1,5 +1,6 @@
 import { useCallback, useMemo, useState } from 'react';
 import { navigate } from '../App';
+import { BotAnalytics } from '../components/BotAnalytics';
 import { GoalsPanel } from '../components/GoalsPanel';
 import { OverviewCard } from '../components/OverviewCard';
 import { Panel, renderLabel } from '../components/Panel';
@@ -135,6 +136,8 @@ export function Dashboard({ siteId }: { siteId: string }) {
         <div className="mt-5">
           <GoalsPanel totalVisitors={overview?.current.visitors ?? 0} />
         </div>
+
+        <BotAnalytics key={site.id} />
 
         <p className="mt-8 text-center text-xs text-stone-400">
           {t('dashboard.timesIn', { tz: site.timezone })} · {t('dashboard.revenueIn', { currency: site.currency })} ·{' '}

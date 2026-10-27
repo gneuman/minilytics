@@ -159,9 +159,9 @@ export function Panel({ tabs }: { tabs: TabDef[] }) {
   const filtered = (data ?? []).filter((r) => !search || (r.label ?? '').toLowerCase().includes(search.toLowerCase()));
 
   return (
-    <div className="card flex min-h-[560px] flex-col p-3">
+    <div className="card flex min-h-[560px] min-w-0 flex-col p-3">
       <div className="flex items-center justify-between gap-2 pb-3">
-        <div className="tabs overflow-x-auto">
+        <div className="tabs min-w-0 overflow-x-auto">
           {tabs.map((tb) => (
             <button key={tb.dim} className={`tab whitespace-nowrap ${tb.dim === active ? 'tab-active' : ''}`} onClick={() => setActive(tb.dim)}>
               {t(tb.tKey)}

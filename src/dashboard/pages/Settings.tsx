@@ -292,6 +292,22 @@ curl -X POST ${origin}/api/v1/goals \\
   -d '{"visitor_id":"<ml_vid cookie>","name":"signup"}'`}</Code>
       </Section>
 
+      <Section title={t('settings.bots.title')} desc={t('settings.bots.desc')}>
+        <p className="mb-3 text-sm text-stone-500">{t('settings.bots.note1')}</p>
+        <Code>{`await fetch('${origin}/api/v1/bots', {
+  method: 'POST',
+  headers: {
+    'Authorization': 'Bearer YOUR_SITE_API_KEY',
+    'Content-Type': 'application/json',
+  },
+  body: JSON.stringify({
+    url: request.url,
+    user_agent: request.headers.get('user-agent') || '',
+  }),
+});`}</Code>
+        <p className="mt-3 text-sm text-stone-500">{t('settings.bots.note2')}</p>
+      </Section>
+
       <LinkBuilder domain={site.domain} />
 
       <Section title={t('settings.general.title')}>
