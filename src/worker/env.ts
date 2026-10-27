@@ -1,3 +1,5 @@
+import type { Context, Next } from 'hono';
+
 export interface Env {
   DB: D1Database;
   ASSETS: Fetcher;
@@ -34,4 +36,23 @@ export async function getSite(db: D1Database, id: string): Promise<Site | null> 
 
 export function forgetSite(id: string) {
   siteCache.delete(id);
+}
+
+/** Resolve the site from an `Authorization: Bearer <api_key>` header, or null. */
+export async function siteFromApiKey(c: Context<AppEnv>): Promise<Site | null> {
+  const key = c.req.header('authorization')?.replace(/^Bearer\s+/i, '');
+  if (!key) return null;
+  return c.env.DB.prepare('SELECT * FROM sites WHERE api_key = ?').bind(key).first<Site>();
+}
+
+/**
+ * Middleware for the API-key endpoints (/api/v1/read/*, /summary, /events).
+ * Loads the site from the Bearer key into `c.set('site')` — the same variable
+ * `loadSite` uses — so `makeCtx(c)` and the stats functions work unchanged.
+ */
+export async function requireApiKey(c: Context<AppEnv>, next: Next) {
+  const site = await siteFromApiKey(c);
+  if (!site) return c.json({ error: 'invalid api key' }, 401);
+  c.set('site', site);
+  await next();
 }

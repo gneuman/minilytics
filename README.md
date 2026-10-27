@@ -150,6 +150,46 @@ curl -X POST https://YOUR-HOST/api/v1/payments -H "Authorization: Bearer ml_..."
   -d '{"transaction_id":"txn_1","amount":29.99,"currency":"USD","visitor_id":"<ml_vid cookie>","email":"jane@acme.com"}'
 ```
 
+## Data API (read your data from scripts and AI agents)
+
+Every endpoint under `/api/v1` is authenticated with the site's **API key** (the same `ml_...` key as the payments
+API, found in site settings), passed as `Authorization: Bearer ml_...`. No dashboard login needed — a key gives access
+to that one site. The read and summary endpoints accept the same `?range=` / `?filters=` query params as the dashboard
+(e.g. `?range=30d`, `?range=today`), so an agent can ask for any window.
+
+**AI-ready summary** — one call for the whole picture (KPIs now vs the previous period, plus top sources, channels and
+entry pages ranked by revenue, all in major currency units):
+
+```bash
+curl https://YOUR-HOST/api/v1/summary?range=30d -H "Authorization: Bearer ml_..."
+```
+
+**Raw reads** (same shapes the dashboard uses):
+
+```bash
+curl https://YOUR-HOST/api/v1/read/overview            -H "Authorization: Bearer ml_..."
+curl "https://YOUR-HOST/api/v1/read/breakdown?dim=source&limit=20" -H "Authorization: Bearer ml_..."
+curl https://YOUR-HOST/api/v1/read/customers           -H "Authorization: Bearer ml_..."
+curl https://YOUR-HOST/api/v1/read/visitors            -H "Authorization: Bearer ml_..."
+curl https://YOUR-HOST/api/v1/read/visitors/<visitorId> -H "Authorization: Bearer ml_..."
+```
+
+`dim` accepts `source`, `channel`, `campaign`, `keyword`, `country`, `region`, `city`, `browser`, `os`, `device`,
+`entry_page`, `exit_page`, `referrer`, and more.
+
+**Push external metrics** — enrich your traffic with data from other platforms (LinkedIn post impressions, a newsletter
+open rate…) so you can see which content earned attention next to which content earned money:
+
+```bash
+curl -X POST https://YOUR-HOST/api/v1/events -H "Authorization: Bearer ml_..." -H "Content-Type: application/json" \
+  -d '{"name":"linkedin_impressions","value":1234,"props":{"platform":"linkedin","post":"/p/abc"}}'
+```
+
+`name` is required; `type` defaults to `external` (the reserved tracker types `pageview`/`goal`/`outbound` are not
+allowed). Pass a real `visitor_id` to attach the event to that visitor's latest session; omit it and the event is filed
+under a synthetic `ext:<platform>` visitor, so aggregate platform metrics stay groupable. `value` and anything in
+`props` are stored as JSON.
+
 ## Accuracy notes
 
 No analytics tool is 100% accurate. These are the main gaps and how this project handles them:

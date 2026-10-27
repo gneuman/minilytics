@@ -1,5 +1,5 @@
 import type { Context } from 'hono';
-import { getSite, type AppEnv, type Site } from './env';
+import { getSite, siteFromApiKey, type AppEnv, type Site } from './env';
 import { verifyStandardWebhook, verifyStripeWebhook } from './lib/crypto';
 
 export function currencyDecimals(currency: string): number {
@@ -301,12 +301,49 @@ export async function handleDodoWebhook(c: Context<AppEnv>) {
   return c.json({ ok: true });
 }
 
+// Stripe charges in the currency's smallest unit, but a few currencies use a
+// different exponent than Intl does (ISK/HUF charge in cents, JPY in whole yen).
+// Normalise to the minor unit we store (what Intl/currencyDecimals expects).
+const STRIPE_DECIMALS: Record<string, number> = {
+  BIF: 0, CLP: 0, DJF: 0, GNF: 0, JPY: 0, KMF: 0, KRW: 0, MGA: 0,
+  PYG: 0, RWF: 0, VND: 0, VUV: 0, XAF: 0, XOF: 0, XPF: 0,
+  BHD: 3, JOD: 3, KWD: 3, OMR: 3, TND: 3,
+};
+
+export function stripeToMinor(amount: number, code: string): number {
+  const shift = currencyDecimals(code) - (STRIPE_DECIMALS[code] ?? 2);
+  const result = shift < 0 ? amount / 10 ** -shift : amount * 10 ** shift;
+  return Number.isSafeInteger(result) ? result : Math.round(result);
+}
+
+/** Pull the attribution signals Stripe scatters across charge/PI/checkout objects. */
+function stripeContext(obj: Record<string, any>) {
+  const meta = { ...(obj.metadata as object) } as Record<string, unknown>;
+  const billing = (obj.billing_details ?? {}) as Record<string, unknown>;
+  const details = (obj.customer_details ?? {}) as Record<string, unknown>;
+  return {
+    visitorId: pickMeta(meta, ['ml_visitor_id', 'visitor_id', 'minilytics_visitor_id']) ?? str(obj.client_reference_id),
+    sessionId: pickMeta(meta, ['ml_session_id', 'session_id', 'minilytics_session_id']),
+    customerId: str(obj.customer),
+    email: str(obj.receipt_email)?.toLowerCase() ?? str(billing.email)?.toLowerCase() ?? str(details.email)?.toLowerCase() ?? null,
+    name: str(billing.name) ?? str(details.name) ?? null,
+  };
+}
+
 /**
  * Stripe webhook: POST /api/webhooks/stripe/:siteId
- * Handles charge.succeeded / payment_intent.succeeded (payments) and
- * charge.refunded (refunds). Attribution uses metadata on the charge,
- * payment intent or checkout session — pass `ml_visitor_id` / `ml_session_id`
- * (or Checkout's `client_reference_id`) so a payment links to the visitor.
+ *
+ * PaymentIntent is the single source of revenue: `payment_intent.succeeded` is
+ * the only event that records money. `checkout.session.completed` only carries
+ * attribution — it stores the visitor against the session's PaymentIntent id so
+ * the payment links up whichever event arrives first. Counting charge + PI +
+ * checkout as three payments would triple-count the same sale, so we don't.
+ *
+ * Pass `ml_visitor_id` / `ml_session_id` in metadata (or Checkout's
+ * `client_reference_id`) so a payment links to the visitor.
+ *
+ * Configure the Stripe webhook with: payment_intent.succeeded,
+ * checkout.session.completed, charge.refunded.
  */
 export async function handleStripeWebhook(c: Context<AppEnv>) {
   const site = await getSite(c.env.DB, c.req.param('siteId')!);
@@ -317,51 +354,67 @@ export async function handleStripeWebhook(c: Context<AppEnv>) {
   const ok = await verifyStripeWebhook(site.stripe_webhook_secret, c.req.header('stripe-signature') ?? null, body);
   if (!ok) return c.json({ error: 'invalid signature' }, 401);
 
-  const event = JSON.parse(body) as { type: string; created?: number; data: { object: Record<string, any> } };
-  const obj = event.data?.object ?? {};
+  let event: { type?: unknown; created?: unknown; data?: { object?: unknown } };
+  try {
+    event = JSON.parse(body);
+  } catch {
+    return c.json({ error: 'invalid Stripe event payload' }, 400);
+  }
+  if (typeof event?.type !== 'string' || !event.data?.object || typeof event.data.object !== 'object') {
+    return c.json({ error: 'invalid Stripe event payload' }, 400);
+  }
+  const type = event.type;
+  const obj = event.data.object as Record<string, any>;
   const ts = (Number(obj.created ?? event.created) || Date.now() / 1000) * 1000;
+  const ctx = stripeContext(obj);
 
-  // Stripe amounts are in the currency's minor unit already (cents), which is what we store.
-  const minor = Number(obj.amount ?? obj.amount_total ?? obj.amount_received ?? 0) || 0;
-  const currency = String(obj.currency ?? site.currency).toUpperCase();
-  // Metadata can live on the object itself or, for a checkout session, be mirrored on the PI.
-  const meta = { ...(obj.metadata as object) } as Record<string, unknown>;
-  const visitorId =
-    pickMeta(meta, ['ml_visitor_id', 'visitor_id', 'minilytics_visitor_id']) ?? str(obj.client_reference_id);
-  const sessionId = pickMeta(meta, ['ml_session_id', 'session_id', 'minilytics_session_id']);
-  const email =
-    str(obj.receipt_email)?.toLowerCase() ??
-    str((obj.billing_details as Record<string, unknown>)?.email)?.toLowerCase() ??
-    str((obj.customer_details as Record<string, unknown>)?.email)?.toLowerCase() ??
-    null;
-  const name = str((obj.billing_details as Record<string, unknown>)?.name) ?? str((obj.customer_details as Record<string, unknown>)?.name);
-  const customerId = str(obj.customer);
-
-  if (event.type === 'charge.succeeded' || event.type === 'payment_intent.succeeded' || event.type === 'checkout.session.completed') {
-    // checkout.session.completed only counts the money once it is actually paid.
-    if (event.type === 'checkout.session.completed' && obj.payment_status && obj.payment_status !== 'paid') {
-      return c.json({ ok: true });
+  if (type === 'checkout.session.completed') {
+    // Not money on its own — only durable attribution for the session's PaymentIntent.
+    if (obj.payment_status && obj.payment_status !== 'paid') return c.json({ ok: true });
+    const intentId = str(obj.payment_intent);
+    if (intentId && ctx.visitorId) {
+      // Reuse the return_page claim path: attribute() picks this up by payment id.
+      await c.env.DB.prepare('INSERT OR IGNORE INTO payment_claims (site_id, payment_id, visitor_id, ts) VALUES (?, ?, ?, ?)')
+        .bind(site.id, intentId, ctx.visitorId, ts)
+        .run();
+      // If the PaymentIntent already landed, backfill its attribution.
+      await c.env.DB.prepare(
+        `UPDATE payments SET visitor_id = COALESCE(visitor_id, ?), matched_by = COALESCE(matched_by, 'metadata')
+         WHERE site_id = ? AND id = ? AND visitor_id IS NULL`,
+      )
+        .bind(ctx.visitorId, site.id, intentId)
+        .run();
     }
-    await recordPayment(c.env.DB, site, {
-      id: String(obj.id),
-      provider: 'stripe',
-      ts,
-      amount: minor,
-      kind: 'payment',
-      currency,
-      visitorId,
-      sessionId,
-      customerId,
-      email,
-      name,
-      subscriptionId: str(obj.subscription) ?? str((obj.invoice as Record<string, unknown>)?.subscription),
-    });
-  } else if (event.type === 'charge.refunded') {
-    const original = await c.env.DB.prepare('SELECT * FROM payments WHERE id = ? AND site_id = ?')
-      .bind(String(obj.id), site.id)
-      .first<{ visitor_id: string | null; session_id: string | null; currency: string; amount: number }>();
-    // amount_refunded is cumulative; store the delta against what we already recorded.
-    const refunded = Number(obj.amount_refunded ?? minor) || 0;
+  } else if (type === 'payment_intent.succeeded') {
+    const minor = stripeToMinor(Number(obj.amount_received ?? obj.amount ?? 0) || 0, String(obj.currency ?? site.currency).toUpperCase());
+    // A zero-value intent (e.g. a free trial starting) is not a paying customer.
+    if (minor > 0) {
+      await recordPayment(c.env.DB, site, {
+        id: String(obj.id),
+        provider: 'stripe',
+        ts,
+        amount: minor,
+        kind: 'payment',
+        currency: String(obj.currency ?? site.currency).toUpperCase(),
+        visitorId: ctx.visitorId,
+        sessionId: ctx.sessionId,
+        customerId: ctx.customerId,
+        email: ctx.email,
+        name: ctx.name,
+        subscriptionId: str((obj.invoice as Record<string, unknown>)?.subscription) ?? str(obj.subscription),
+      });
+    }
+  } else if (type === 'charge.refunded') {
+    // A charge belongs to a PaymentIntent; credit the refund to that payment.
+    const intentId = str(obj.payment_intent);
+    const original = intentId
+      ? await c.env.DB.prepare("SELECT * FROM payments WHERE id = ? AND site_id = ? AND kind = 'payment'")
+          .bind(intentId, site.id)
+          .first<{ visitor_id: string | null; session_id: string | null; currency: string; amount: number }>()
+      : null;
+    const currency = String(obj.currency ?? original?.currency ?? site.currency).toUpperCase();
+    // amount_refunded is cumulative; use it as the total refunded for this charge.
+    const refunded = stripeToMinor(Number(obj.amount_refunded ?? obj.amount ?? 0) || 0, currency);
     await c.env.DB.prepare(
       `INSERT OR IGNORE INTO payments (id, site_id, provider, ts, amount, kind, currency, visitor_id, session_id, customer_id, email, name)
        VALUES (?, ?, 'stripe', ?, ?, 'refund', ?, ?, ?, ?, ?, ?)`,
@@ -372,22 +425,16 @@ export async function handleStripeWebhook(c: Context<AppEnv>) {
         ts,
         -Math.abs(refunded),
         currency,
-        original?.visitor_id ?? visitorId,
-        original?.session_id ?? sessionId,
-        customerId,
-        email,
-        name,
+        original?.visitor_id ?? ctx.visitorId,
+        original?.session_id ?? ctx.sessionId,
+        ctx.customerId,
+        ctx.email,
+        ctx.name,
       )
       .run();
   }
   // Acknowledge everything else so Stripe doesn't retry.
   return c.json({ ok: true });
-}
-
-async function siteFromApiKey(c: Context<AppEnv>): Promise<Site | null> {
-  const key = c.req.header('authorization')?.replace(/^Bearer\s+/i, '');
-  if (!key) return null;
-  return c.env.DB.prepare('SELECT * FROM sites WHERE api_key = ?').bind(key).first<Site>();
 }
 
 /**

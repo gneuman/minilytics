@@ -3,10 +3,12 @@ import { bodyLimit } from 'hono/body-limit';
 import { deleteCookie, getCookie, setCookie } from 'hono/cookie';
 import { cors } from 'hono/cors';
 import { handleEvent } from './collect';
-import { forgetSite, type AppEnv, type Site } from './env';
+import { forgetSite, requireApiKey, type AppEnv, type Site } from './env';
+import { handleEventApi } from './events';
 import { passwordsMatch, randomId, signToken, verifyToken } from './lib/crypto';
 import { handleDodoWebhook, handleGoalApi, handlePaymentApi, handleStripeWebhook, rematchPayments } from './payments';
 import { breakdown, customers, funnel, makeCtx, overview, visitorProfile, visitors, type FunnelStep } from './stats';
+import { handleSummaryApi } from './summary';
 import { collectBot, botStats } from './bots';
 
 const app = new Hono<AppEnv>();
@@ -23,6 +25,27 @@ app.post('/api/webhooks/dodo/:siteId', handleDodoWebhook);
 app.post('/api/webhooks/stripe/:siteId', handleStripeWebhook);
 app.post('/api/v1/payments', handlePaymentApi);
 app.post('/api/v1/goals', handleGoalApi);
+app.post('/api/v1/events', handleEventApi);
+
+// ---------- read API (API key per site; for scripts and AI agents)
+// Same Bearer key as ingestion. requireApiKey loads the site into c.set('site'),
+// so makeCtx(c) and the stats functions work exactly as in the dashboard API.
+app.use('/api/v1/read/*', requireApiKey);
+app.use('/api/v1/summary', requireApiKey);
+app.get('/api/v1/summary', handleSummaryApi);
+app.get('/api/v1/read/overview', async (c) => c.json(await overview(makeCtx(c))));
+app.get('/api/v1/read/breakdown', async (c) => {
+  try {
+    return c.json(await breakdown(makeCtx(c), c.req.query('dim') ?? 'source', Number(c.req.query('limit')) || 100));
+  } catch (e) {
+    return c.json({ error: (e as Error).message }, 400);
+  }
+});
+app.get('/api/v1/read/customers', async (c) => c.json(await customers(makeCtx(c))));
+app.get('/api/v1/read/visitors', async (c) => c.json(await visitors(makeCtx(c))));
+app.get('/api/v1/read/visitors/:vid', async (c) =>
+  c.json(await visitorProfile(c.env.DB, c.get('site'), c.req.param('vid'))),
+);
 app.post('/api/v1/bots', bodyLimit({ maxSize: 4096, onError: c => c.json({ error: 'Payload too large' }, 413) }), collectBot);
 
 // ---------- login
