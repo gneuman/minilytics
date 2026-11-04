@@ -25,3 +25,11 @@ describe('bot classification', () => {
     expect(classifyBot('')).toBeNull();
   });
 });
+
+import { isDatacenter } from '../src/worker/lib/ua';
+describe('datacenter traffic', () => {
+  it.each(['Amazon.com, Inc.', 'DigitalOcean, LLC', 'Alibaba US Technology Co., Ltd.', 'Google LLC', 'Hetzner Online GmbH', 'Tencent Building, Kejizhongyi Avenue'])(
+    'drops %s', org => expect(isDatacenter(org)).toBe(true));
+  it.each(['Telmex', 'Comcast Cable Communications, LLC', 'Telefonica de Espana', 'Google Fiber Inc.', undefined, ''])(
+    'keeps %s', org => expect(isDatacenter(org)).toBe(false));
+});

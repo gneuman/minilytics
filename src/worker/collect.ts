@@ -1,7 +1,7 @@
 import type { Context } from 'hono';
 import { classify } from '../shared/sources';
 import { getSite, type AppEnv, type Site } from './env';
-import { isBot, parseUA } from './lib/ua';
+import { isBot, isDatacenter, parseUA } from './lib/ua';
 import { creditedSessionSql } from './payments';
 
 const TYPES = new Set(['pageview', 'goal', 'outbound', 'ping', 'identify']);
@@ -58,6 +58,8 @@ export async function handleEvent(c: Context<AppEnv>) {
 
   const ua = c.req.header('user-agent') ?? '';
   if (isBot(ua)) return c.body(null, 202);
+  const asOrg = (c.req.raw as { cf?: { asOrganization?: string } }).cf?.asOrganization;
+  if (isDatacenter(asOrg)) return c.body(null, 202);
 
   const site = await getSite(c.env.DB, body.w);
   if (!site) return c.body(null, 404);
