@@ -11,6 +11,17 @@ export function isBot(ua: string): boolean {
   return !ua || BOT_RE.test(ua);
 }
 
+// Hosting networks. A browser-looking UA coming from here is almost always a scraper
+// or a headless crawler (they inflate "Direct", Singapore/US and the bounce rate).
+// Real people on a VPN hosted in a datacenter are dropped too: an accepted trade-off.
+const DATACENTER_RE =
+  /amazon|aws|google cloud|google llc|microsoft|azure|digitalocean|linode|akamai|ovh|hetzner|alibaba|tencent|huawei cloud|oracle|vultr|choopa|contabo|leaseweb|m247|scaleway|online s\.a\.s|hostinger|datacamp|cdn77|zenlayer|psychz|colocrossing|g-core|byteplus|bytedance/i;
+
+/** Does the request come from a hosting provider rather than a consumer ISP? `asOrg` is Cloudflare's `cf.asOrganization`. */
+export function isDatacenter(asOrg: string | null | undefined): boolean {
+  return !!asOrg && DATACENTER_RE.test(asOrg);
+}
+
 // Order matters: in-app browsers and Chromium forks before Chrome, Chrome before Safari.
 const BROWSERS: [RegExp, string][] = [
   [/Instagram/i, 'Instagram'],
