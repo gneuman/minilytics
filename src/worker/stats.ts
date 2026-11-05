@@ -402,6 +402,16 @@ export interface FunnelStep {
   label?: string;
 }
 
+/** Validates a funnel body from the dashboard. Shared by create (POST) and edit (PUT). */
+export function cleanFunnel(b: { name?: unknown; steps?: unknown }): { name: string; steps: FunnelStep[] } | null {
+  const name = typeof b.name === 'string' ? b.name.trim().slice(0, 100) : '';
+  const steps = (Array.isArray(b.steps) ? (b.steps as FunnelStep[]) : [])
+    .filter((s) => s && (s.type === 'page' || s.type === 'goal') && typeof s.value === 'string' && s.value.trim())
+    .slice(0, 10)
+    .map((s) => ({ type: s.type, value: s.value.trim().slice(0, 200) }));
+  return name && steps.length >= 2 ? { name, steps } : null;
+}
+
 /** Visitors who completed each step, in order, within the period. */
 export async function funnel(ctx: Ctx, steps: FunnelStep[]) {
   if (!steps.length) return [];

@@ -91,6 +91,7 @@ function Funnels() {
   const { data: funnels } = useApi<FunnelDef[]>(`/api/sites/${site.id}/funnels`, version);
   const [selected, setSelected] = useState<string | null>(null);
   const [creating, setCreating] = useState(false);
+  const [editing, setEditing] = useState<FunnelDef | null>(null);
   const current = funnels?.find((f) => f.id === selected) ?? funnels?.[0];
   const { data: stats } = useApi<(FunnelDef['steps'][0] & { visitors: number })[]>(
     current ? `/api/sites/${site.id}/funnels/${current.id}/stats?${qs(q)}` : null,
@@ -98,11 +99,14 @@ function Funnels() {
   );
 
   if (!funnels) return <div className="h-40 animate-pulse" />;
-  if (creating || !funnels.length)
+  if (creating || editing || !funnels.length)
     return (
       <FunnelForm
+        key={editing?.id ?? 'new'}
+        initial={editing ?? undefined}
         onDone={(id) => {
           setCreating(false);
+          setEditing(null);
           if (id) setSelected(id);
           setVersion((v) => v + 1);
         }}
@@ -124,6 +128,11 @@ function Funnels() {
         <button className="btn py-1.5" onClick={() => setCreating(true)}>
           {t('goals.funnel.newFunnel')}
         </button>
+        {current && (
+          <button className="btn py-1.5" onClick={() => setEditing(current)}>
+            {t('common.edit')}
+          </button>
+        )}
         {current && (
           <button
             className="btn py-1.5 text-red-600"
@@ -163,15 +172,18 @@ function Funnels() {
   );
 }
 
-function FunnelForm({ onDone, canCancel }: { onDone: (id?: string) => void; canCancel: boolean }) {
+/** Creates a funnel, or edits `initial` in place (same id) when given. */
+function FunnelForm({ initial, onDone, canCancel }: { initial?: FunnelDef; onDone: (id?: string) => void; canCancel: boolean }) {
   const { site } = useDash();
   const t = useT();
-  const [name, setName] = useState(t('goals.funnel.defaultName'));
-  const [steps, setSteps] = useState<FunnelDef['steps']>([
-    { type: 'page', value: '/' },
-    { type: 'page', value: '/pricing' },
-    { type: 'goal', value: 'checkout' },
-  ]);
+  const [name, setName] = useState(initial?.name ?? t('goals.funnel.defaultName'));
+  const [steps, setSteps] = useState<FunnelDef['steps']>(
+    initial?.steps.map((s) => ({ type: s.type, value: s.value })) ?? [
+      { type: 'page', value: '/' },
+      { type: 'page', value: '/pricing' },
+      { type: 'goal', value: 'checkout' },
+    ],
+  );
   const [error, setError] = useState('');
   const set = (i: number, patch: Partial<FunnelDef['steps'][0]>) => setSteps((s) => s.map((x, j) => (j === i ? { ...x, ...patch } : x)));
 
@@ -181,7 +193,9 @@ function FunnelForm({ onDone, canCancel }: { onDone: (id?: string) => void; canC
       onSubmit={async (e) => {
         e.preventDefault();
         try {
-          const f = await api<FunnelDef>(`/api/sites/${site.id}/funnels`, { method: 'POST', json: { name, steps } });
+          const f = initial
+            ? await api<FunnelDef>(`/api/sites/${site.id}/funnels/${initial.id}`, { method: 'PUT', json: { name, steps } })
+            : await api<FunnelDef>(`/api/sites/${site.id}/funnels`, { method: 'POST', json: { name, steps } });
           onDone(f.id);
         } catch (err) {
           setError((err as Error).message);
