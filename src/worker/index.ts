@@ -7,7 +7,7 @@ import { forgetSite, requireApiKey, type AppEnv, type Site } from './env';
 import { handleEventApi } from './events';
 import { passwordsMatch, randomId, signToken, verifyToken } from './lib/crypto';
 import { handleDodoWebhook, handleGoalApi, handlePaymentApi, handleStripeWebhook, rematchPayments } from './payments';
-import { breakdown, customers, funnel, makeCtx, overview, visitorProfile, visitors, type FunnelStep } from './stats';
+import { breakdown, cleanFunnel, customers, funnel, makeCtx, overview, visitorProfile, visitors, type FunnelStep } from './stats';
 import { handleSummaryApi } from './summary';
 import { collectBot, botStats } from './bots';
 
@@ -257,17 +257,25 @@ app.get('/api/sites/:id/funnels', async (c) => {
 });
 
 app.post('/api/sites/:id/funnels', async (c) => {
-  const b = await c.req.json<{ name?: string; steps?: FunnelStep[] }>().catch(() => ({}) as { name?: string; steps?: FunnelStep[] });
-  const steps = (b.steps ?? [])
-    .filter((s) => (s.type === 'page' || s.type === 'goal') && typeof s.value === 'string' && s.value.trim())
-    .slice(0, 10)
-    .map((s) => ({ type: s.type, value: s.value.trim().slice(0, 200) }));
-  if (!b.name?.trim() || steps.length < 2) return c.json({ error: 'A funnel needs a name and at least 2 steps' }, 400);
+  const f = cleanFunnel(await c.req.json().catch(() => ({})));
+  if (!f) return c.json({ error: 'A funnel needs a name and at least 2 steps' }, 400);
   const id = randomId(8);
   await c.env.DB.prepare('INSERT INTO funnels (id, site_id, name, steps, created_at) VALUES (?, ?, ?, ?, ?)')
-    .bind(id, c.get('site').id, b.name.trim().slice(0, 100), JSON.stringify(steps), Date.now())
+    .bind(id, c.get('site').id, f.name, JSON.stringify(f.steps), Date.now())
     .run();
-  return c.json({ id, name: b.name.trim(), steps });
+  return c.json({ id, ...f });
+});
+
+// Edit in place: same id, same created_at, so the funnel keeps its spot and its link.
+app.put('/api/sites/:id/funnels/:fid', async (c) => {
+  const f = cleanFunnel(await c.req.json().catch(() => ({})));
+  if (!f) return c.json({ error: 'A funnel needs a name and at least 2 steps' }, 400);
+  const id = c.req.param('fid');
+  const res = await c.env.DB.prepare('UPDATE funnels SET name = ?, steps = ? WHERE id = ? AND site_id = ?')
+    .bind(f.name, JSON.stringify(f.steps), id, c.get('site').id)
+    .run();
+  if (!res.meta.changes) return c.json({ error: 'funnel not found' }, 404);
+  return c.json({ id, ...f });
 });
 
 app.delete('/api/sites/:id/funnels/:fid', async (c) => {
