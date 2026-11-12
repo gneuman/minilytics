@@ -1,6 +1,7 @@
 import type { Context } from 'hono';
 import type { AppEnv, Site } from './env';
 import { bucketLabels, bucketSql, resolveRange, tzOffset, type Range } from './lib/time';
+import { normalizePath } from './collect';
 import { currencyDecimals } from './payments';
 
 /** Filters that live on the session row (clicking a row in the dashboard adds one of these). */
@@ -408,13 +409,23 @@ export function cleanFunnel(b: { name?: unknown; steps?: unknown }): { name: str
   const steps = (Array.isArray(b.steps) ? (b.steps as FunnelStep[]) : [])
     .filter((s) => s && (s.type === 'page' || s.type === 'goal') && typeof s.value === 'string' && s.value.trim())
     .slice(0, 10)
-    .map((s) => ({ type: s.type, value: s.value.trim().slice(0, 200) }));
+    .map((s) => normalizeStep({ type: s.type, value: s.value.trim().slice(0, 200) }));
   return name && steps.length >= 2 ? { name, steps } : null;
 }
 
+/**
+ * Page steps follow the same rule as collected pageviews (`normalizePath`), so `/x/`
+ * matches the stored `/x`. Applied on save and on read, which fixes funnels saved
+ * before this rule without a migration (INT-1912).
+ */
+function normalizeStep(st: FunnelStep): FunnelStep {
+  return st.type === 'page' ? { type: st.type, value: normalizePath(st.value) } : st;
+}
+
 /** Visitors who completed each step, in order, within the period. */
-export async function funnel(ctx: Ctx, steps: FunnelStep[]) {
-  if (!steps.length) return [];
+export async function funnel(ctx: Ctx, saved: FunnelStep[]) {
+  if (!saved.length) return [];
+  const steps = saved.map(normalizeStep);
   const f = filterSql(ctx.filters);
   const join = hasFilters(ctx.filters) ? 'JOIN sessions s ON s.site_id = e.site_id AND s.id = e.session_id' : '';
   const conds: string[] = [];
