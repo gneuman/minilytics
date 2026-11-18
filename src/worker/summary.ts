@@ -2,6 +2,7 @@ import type { Context } from 'hono';
 import type { AppEnv } from './env';
 import { currencyDecimals } from './payments';
 import { breakdown, makeCtx, overview, type BreakdownRow } from './stats';
+import { aiReport } from './ai';
 
 /** Revenue is stored in minor units (cents); AI shouldn't have to divide. */
 function toMajor(minor: number, decimals: number): number {
@@ -31,11 +32,12 @@ export async function handleSummaryApi(c: Context<AppEnv>) {
   const site = ctx.site;
   const decimals = currencyDecimals(site.currency);
 
-  const [ov, bySource, byChannel, byEntry] = await Promise.all([
+  const [ov, bySource, byChannel, byEntry, ai] = await Promise.all([
     overview(ctx),
     breakdown(ctx, 'source', 50),
     breakdown(ctx, 'channel', 50),
     breakdown(ctx, 'entry_page', 50),
+    aiReport(ctx),
   ]);
 
   const flatKpis = (k: typeof ov.current) => ({
@@ -56,5 +58,13 @@ export async function handleSummaryApi(c: Context<AppEnv>) {
     topSources: topRows(bySource, decimals),
     topChannels: topRows(byChannel, decimals),
     topEntryPages: topRows(byEntry, decimals),
+    // AI-assistant traffic, now vs previous, with its denominator (details: /api/v1/read/ai).
+    aiTraffic: {
+      current: ai.current.visitors,
+      previous: ai.previous.visitors,
+      change: ai.change,
+      share: ai.share,
+      sources: ai.sources.slice(0, 10),
+    },
   });
 }

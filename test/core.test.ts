@@ -1,6 +1,7 @@
 import { createHmac } from 'node:crypto';
 import { describe, expect, it } from 'vitest';
 import { classify } from '../src/shared/sources';
+import { aiChange } from '../src/worker/ai';
 import { belongsTo, normalizePath } from '../src/worker/collect';
 import { verifyStandardWebhook } from '../src/worker/lib/crypto';
 import { bucketLabels, resolveRange, startOfDay, tzOffset } from '../src/worker/lib/time';
@@ -15,6 +16,12 @@ describe('classify', () => {
   });
   it('recognises AI assistants, including utm_source=chatgpt.com', () => {
     expect(classify({ referrerDomain: null, utmSource: 'chatgpt.com' })).toMatchObject({ source: 'ChatGPT', channel: 'AI' });
+    expect(classify({ referrerDomain: 'edgeservices.bing.com' })).toMatchObject({ source: 'Copilot', channel: 'AI' });
+    expect(classify({ referrerDomain: 'www.bing.com' })).toMatchObject({ source: 'Bing', channel: 'Organic Search' });
+    expect(classify({ referrerDomain: 'www.perplexity.ai' })).toMatchObject({ source: 'Perplexity', channel: 'AI' });
+    expect(classify({ referrerDomain: 'gemini.google.com' })).toMatchObject({ source: 'Gemini', channel: 'AI' });
+    expect(classify({ referrerDomain: 'www.meta.ai' })).toMatchObject({ source: 'Meta AI', channel: 'AI' });
+    expect(classify({ referrerDomain: 'chat.mistral.ai' })).toMatchObject({ source: 'Mistral', channel: 'AI' });
   });
   it('lets ref/utm tags win over the referrer', () => {
     expect(classify({ referrerDomain: 'google.com', ref: 'producthunt' })).toMatchObject({ source: 'Product Hunt' });
@@ -98,5 +105,13 @@ describe('Standard Webhooks (Dodo)', () => {
   it('rejects tampering and stale timestamps', async () => {
     expect(await verifyStandardWebhook(secret, { id: 'msg_1', timestamp: ts, signature: `v1,${sig}` }, body + ' ')).toBe(false);
     expect(await verifyStandardWebhook(secret, { id: 'msg_1', timestamp: String(Number(ts) - 3600), signature: `v1,${sig}` }, body)).toBe(false);
+  });
+});
+
+describe('AI traffic', () => {
+  it('reports change only when there is a previous base', () => {
+    expect(aiChange(8, 2)).toBe(3);
+    expect(aiChange(5, 0)).toBeNull();
+    expect(aiChange(0, 4)).toBe(-1);
   });
 });
