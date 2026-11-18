@@ -9,6 +9,7 @@ import { passwordsMatch, randomId, signToken, verifyToken } from './lib/crypto';
 import { handleDodoWebhook, handleGoalApi, handlePaymentApi, handleStripeWebhook, rematchPayments } from './payments';
 import { breakdown, cleanFunnel, customers, funnel, makeCtx, overview, visitorProfile, visitors, type FunnelStep } from './stats';
 import { handleSummaryApi } from './summary';
+import { handleAiApi } from './ai';
 import { collectBot, botStats } from './bots';
 
 const app = new Hono<AppEnv>();
@@ -41,6 +42,7 @@ app.get('/api/v1/read/breakdown', async (c) => {
     return c.json({ error: (e as Error).message }, 400);
   }
 });
+app.get('/api/v1/read/ai', handleAiApi);
 app.get('/api/v1/read/customers', async (c) => c.json(await customers(makeCtx(c))));
 app.get('/api/v1/read/visitors', async (c) => c.json(await visitors(makeCtx(c))));
 app.get('/api/v1/read/visitors/:vid', async (c) =>

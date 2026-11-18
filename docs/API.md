@@ -114,6 +114,34 @@ curl "https://minilytics.gneuman.workers.dev/api/v1/read/breakdown?dim=entry_pag
 [ { "label": "/modelos-ia-gratuitos", "visitors": 18, "pageviews": 24, "revenue": 0, "customers": 0, "extra": null } ]
 ```
 
+### `GET /api/v1/read/ai`
+Traffic from AI assistants (channel `AI`: ChatGPT, Perplexity, Gemini, Copilot, Claude, Grok, DeepSeek,
+Meta AI, Mistral, You.com, Poe, Phind, Duck.ai), current window vs the previous one of the same length.
+Every count comes with its denominator. `change` is `null` when the previous window had 0 AI visitors.
+
+```bash
+curl "https://minilytics.gneuman.workers.dev/api/v1/read/ai?range=30d" \
+  -H "Authorization: Bearer ml_xxxxxxxxxxxxxxxx"
+```
+
+```json
+{
+  "current":  { "visitors": 8, "sessions": 9, "pageviews": 14 },
+  "previous": { "visitors": 2, "sessions": 2, "pageviews": 3 },
+  "change": 3,
+  "share": { "current": { "ai": 8, "of": 410 }, "previous": { "ai": 2, "of": 380 } },
+  "sources": [ { "label": "ChatGPT", "visitors": 6, "previousVisitors": 2 } ],
+  "entryPages": [ { "label": "/consultor-de-ia/", "visitors": 3 } ],
+  "series": [ { "bucket": 1790575200000, "visitors": 1 } ]
+}
+```
+
+Limits: a visit counts as AI only when the assistant sends a referrer or a `utm_source` (ChatGPT adds
+`utm_source=chatgpt.com`). Google AI Overviews and AI Mode arrive as `google.com` and count as Organic
+Search; there is no way to tell them apart from the browser. The channel is set when the visit is
+recorded, so new sources only count from the day they were added. `/api/v1/summary` carries the same
+numbers, shorter, under `aiTraffic`.
+
 ### `GET /api/v1/read/customers`
 Up to 200 recent payments with attribution: who paid, how much, the source/channel credited, and how
 the payment was matched (`matched_by`).
